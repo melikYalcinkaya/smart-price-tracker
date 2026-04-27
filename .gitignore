@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Sanal ortam
+venv/
+.venv/
+env/
+
+# Ortam degiskenleri
+.env
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+
+# Veri dosyalari (kisisel, commit edilmez)
+data/raw/*.csv
+data/processed/*.csv
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Log dosyalari
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db

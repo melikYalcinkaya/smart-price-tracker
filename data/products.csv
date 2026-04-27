@@ -1,0 +1,4 @@
+product_id,source,product_url,name,category,added_at
+1,hepsiburada,https://example.com/hepsiburada/laptop-model-x,Laptop Model X,laptop,2024-01-01
+2,trendyol,https://example.com/trendyol/telefon-model-y,Telefon Model Y,telefon,2024-01-01
+3,mediamarkt,https://example.com/mediamarkt/tablet-model-z,Tablet Model Z,tablet,2024-01-01
