@@ -1,16 +1,26 @@
-import Hero from "./components/Hero";
-import Footer from "./components/Footer";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+import SearchSection from "./components/SearchSection";
+import ProductDetails from "./pages/ProductDetails";
 import MobileNav from "./components/MobileNav";
 
 function App() {
   return (
-    <div className="bg-surface-container-lowest text-on-surface min-h-screen flex flex-col font-body-md text-body-md selection:bg-primary-container selection:text-on-primary-container">
-      {/* İsteğine göre Header (üst navbar) çıkarıldı */}
+    <BrowserRouter>
+      <div className="bg-surface text-on-background min-h-screen pb-20 md:pb-0 font-body-md selection:bg-primary-container selection:text-on-primary-container">
 
-      <Hero />
-      <Footer />
-      <MobileNav />
-    </div>
+        {/* Router (Sayfa Geçişleri) */}
+        <Routes>
+          {/* Ana Sayfa (Arama Ekranı) */}
+          <Route path="/" element={<SearchSection />} />
+
+          {/* Ürün Detay Sayfası (:id parametresi ile) */}
+          <Route path="/product/:id" element={<ProductDetails />} />
+        </Routes>
+
+        {/* Mobile Navigation (Her sayfada sabit kalır) */}
+        <MobileNav />
+      </div>
+    </BrowserRouter>
   );
 }
 
