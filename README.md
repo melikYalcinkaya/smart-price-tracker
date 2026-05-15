@@ -37,13 +37,16 @@ source venv/bin/activate
 
 # 3. Bagımlılıkları yukle
 pip install -r requirements.txt
+playwright install
 
 # 4. Ortam degiskenlerini ayarla
 cp .env.example .env
 # .env dosyasını duzenleyerek kendi bilgilerini gir
 
-# 5. Uygulamayı calistir
-python -m src.main
+# 5. Uygulamayı calistir (Sırasıyla)
+python -m src.setup   # Ürün listesini oluşturur
+python -m src.enrich  # Satıcı puanlarını çeker
+python -m src.tracker # Fiyatları günceller
 ```
 
 ## Klasör Yapısı
