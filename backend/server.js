@@ -3,6 +3,8 @@ import cors from "cors";
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import { ChromaClient } from "chromadb";
+import { DefaultEmbeddingFunction } from "@chroma-core/default-embed";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -10,6 +12,22 @@ const PORT = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
+
+// ChromaDB client (lazy init)
+let chromaClient = null;
+let chromaCollection = null;
+const CHROMA_URL = process.env.CHROMA_URL || "http://localhost:8000";
+
+async function getChromaCollection() {
+  if (chromaCollection) return chromaCollection;
+  const embedder = new DefaultEmbeddingFunction();
+  chromaClient = new ChromaClient({ host: "localhost", port: 8000 });
+  chromaCollection = await chromaClient.getCollection({
+    name: "products",
+    embeddingFunction: embedder,
+  });
+  return chromaCollection;
+}
 
 // CSV dosyalarının yolları
 const DATA_DIR = join(__dirname, "..", "data");
@@ -311,6 +329,151 @@ app.get("/api/stats", (req, res) => {
   }
 });
 
+// Doğal dil ile ürün arama (ChromaDB vektör araması)
+app.post("/api/search", async (req, res) => {
+  try {
+    const { query, limit = 20 } = req.body;
+    if (!query) {
+      return res.status(400).json({ success: false, error: "query gerekli" });
+    }
+
+    let collection;
+    try {
+      collection = await getChromaCollection();
+    } catch {
+      return res.status(503).json({
+        success: false,
+        error: "ChromaDB bağlantısı yok. Önce 'node scripts/index-products.js' çalıştırın.",
+      });
+    }
+
+    // Sorguyu zenginleştir: kategori/brand/fiyat ipuçları ekle
+    const enhancedQuery = buildSearchQuery(query);
+
+    const results = await collection.query({
+      queryTexts: [enhancedQuery],
+      nResults: Math.min(limit, 100),
+    });
+
+    const products = [];
+    for (let i = 0; i < results.ids[0].length; i++) {
+      const meta = results.metadatas[0][i];
+      const distance = results.distances ? results.distances[0][i] : null;
+      // Cosine mesafesini benzerlik skoruna çevir (0-1 arası)
+      const score = distance != null ? Math.round((1 - distance) * 100) / 100 : null;
+
+      products.push({
+        id: parseInt(meta.id),
+        platform: meta.platform,
+        category: meta.category,
+        name: meta.name,
+        brand: meta.brand,
+        seller: meta.seller,
+        seller_rating: meta.seller_rating,
+        link: meta.link,
+        base_price: parseFloat(meta.base_price) || 0,
+        score,
+      });
+    }
+
+    // Fiyat filtresi varsa uygula (sorgudan çıkarılan)
+    const priceFilter = extractPriceFilter(query);
+    let filtered = products;
+    if (priceFilter) {
+      filtered = products.filter((p) => {
+        if (priceFilter.max && p.base_price > priceFilter.max) return false;
+        if (priceFilter.min && p.base_price < priceFilter.min) return false;
+        return true;
+      });
+    }
+
+    res.json({
+      success: true,
+      query,
+      total: filtered.length,
+      data: filtered,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Sorguyu embedding için zenginleştir
+function buildSearchQuery(query) {
+  const q = query.toLowerCase();
+  const hints = [];
+
+  // Kategori ipuçları
+  if (/laptop|bilgisayar|notebook|dizüstü|gaming/i.test(q)) hints.push("category: laptop");
+  if (/telefon|phone|cep|iphone|samsung|xiaomi/i.test(q)) hints.push("category: telefon");
+  if (/tablet|ipad/i.test(q)) hints.push("category: tablet");
+  if (/kulaklık|headphone|headset|kulak/i.test(q)) hints.push("category: kulaklık");
+  if (/saat|watch|akıllı saat/i.test(q)) hints.push("category: akıllı saat");
+
+  // Marka ipuçları
+  const brands = ["Apple", "Samsung", "Lenovo", "HP", "ASUS", "ACER", "MSI", "Casper", "Monster", "Xiaomi", "Huawei"];
+  for (const brand of brands) {
+    if (q.includes(brand.toLowerCase())) hints.push(`brand: ${brand}`);
+  }
+
+  return hints.length > 0 ? `${query} (${hints.join(", ")})` : query;
+}
+
+// Doğal dil sorgusundan fiyat filtresi çıkar
+function extractPriceFilter(query) {
+  const q = query.toLowerCase();
+  // "under X TL", "X TL altında", "max X TL", "en fazla X TL"
+  const maxPatterns = [
+    /(?:under|max|en fazla|altında|az|maximum)\s*(\d[\d.,]*)\s*(?:TL|₺|lira)?/i,
+    /(\d[\d.,]*)\s*(?:TL|₺|lira)?\s*(?:altında|aşağı|under)/i,
+    /(?:bütçe|butce)\s*(\d[\d.,]*)/i,
+  ];
+  // "over X TL", "X TL üstünde", "min X TL"
+  const minPatterns = [
+    /(?:over|min|en az|üstünde|üstü|minimum)\s*(\d[\d.,]*)\s*(?:TL|₺|lira)?/i,
+    /(\d[\d.,]*)\s*(?:TL|₺|lira)?\s*(?:üstü|üstünde|üzeri|over)/i,
+  ];
+
+  let min = null;
+  let max = null;
+
+  for (const pattern of maxPatterns) {
+    const match = q.match(pattern);
+    if (match) {
+      max = parseFloat(match[1].replace(",", "."));
+      break;
+    }
+  }
+  for (const pattern of minPatterns) {
+    const match = q.match(pattern);
+    if (match) {
+      min = parseFloat(match[1].replace(",", "."));
+      break;
+    }
+  }
+
+  // "X-Y TL arası", "X ile Y TL arasında"
+  const rangeMatch = q.match(/(\d[\d.,]*)\s*(?:-|ile|to|ve)\s*(\d[\d.,]*)\s*(?:TL|₺|lira)?\s*(?:arası|arasinda|aralığı|range)?/i);
+  if (rangeMatch) {
+    min = parseFloat(rangeMatch[1].replace(",", "."));
+    max = parseFloat(rangeMatch[2].replace(",", "."));
+  }
+
+  if (min !== null || max !== null) return { min, max };
+  return null;
+}
+
+// Index durumunu sorgula
+app.get("/api/search/status", async (req, res) => {
+  try {
+    const collection = await getChromaCollection();
+    const count = await collection.count();
+    res.json({ success: true, indexed: true, productCount: count });
+  } catch {
+    res.json({ success: true, indexed: false, productCount: 0 });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Backend API çalışıyor: http://localhost:${PORT}`);
   console.log(`API uç noktaları:`);
@@ -319,4 +482,6 @@ app.listen(PORT, () => {
   console.log(`  GET /api/price-history     - Fiyat geçmişi (filtreli, sayfalı)`);
   console.log(`  GET /api/price-history/product/:productId - Ürüne ait fiyat geçmişi`);
   console.log(`  GET /api/stats             - Dashboard istatistikleri`);
+  console.log(`  POST /api/search           - Doğal dil ile ürün arama (ChromaDB)`);
+  console.log(`  GET /api/search/status     - ChromaDB index durumu`);
 });

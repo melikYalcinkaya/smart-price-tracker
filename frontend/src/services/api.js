@@ -50,6 +50,24 @@ export async function fetchStats() {
   return res.json();
 }
 
+// Doğal dil ile ürün arama (ChromaDB vektör araması)
+export async function searchProducts(query, limit = 20) {
+  const res = await fetch(`${API_BASE}/search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, limit }),
+  });
+  if (!res.ok) throw new Error("API error");
+  return res.json();
+}
+
+// ChromaDB index durumu
+export async function fetchSearchStatus() {
+  const res = await fetch(`${API_BASE}/search/status`);
+  if (!res.ok) throw new Error("API error");
+  return res.json();
+}
+
 // CSV verisini frontend formatına dönüştür
 export function mapProduct(raw) {
   const basePrice = parseFloat(raw.base_price) || 0;

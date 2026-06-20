@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import ProductCard from "./ProductCard";
-import { fetchProducts, mapProduct } from "../services/api";
+import VoiceSearch from "./VoiceSearch";
+import { fetchProducts, searchProducts, mapProduct } from "../services/api";
 
 export default function SearchSection() {
     const [hasSearched, setHasSearched] = useState(false);
@@ -8,6 +9,8 @@ export default function SearchSection() {
     const [products, setProducts] = useState([]);
     const [loading, setLoading] = useState(false);
     const [total, setTotal] = useState(0);
+    const [aiMode, setAiMode] = useState(false);
+    const [voiceError, setVoiceError] = useState(null);
 
     // İlk yüklemede tüm ürünleri getir
     useEffect(() => {
@@ -21,18 +24,51 @@ export default function SearchSection() {
             .finally(() => setLoading(false));
     }, []);
 
+    const doSearch = async (query, isAiSearch) => {
+        setLoading(true);
+        setVoiceError(null);
+
+        try {
+            if (isAiSearch) {
+                // Doğal dil araması (ChromaDB)
+                const res = await searchProducts(query, 50);
+                if (res.success) {
+                    setProducts(res.data.map(mapProduct));
+                    setTotal(res.total);
+                    setAiMode(true);
+                }
+            } else {
+                // Klasik anahtar kelime araması
+                const res = await fetchProducts({ search: query, limit: 50 });
+                setProducts(res.data.map(mapProduct));
+                setTotal(res.total);
+                setAiMode(false);
+            }
+        } catch (err) {
+            console.error("API hatası:", err);
+            // AI arama başarısız olursa klasik aramaya düş
+            try {
+                const res = await fetchProducts({ search: query, limit: 50 });
+                setProducts(res.data.map(mapProduct));
+                setTotal(res.total);
+                setAiMode(false);
+            } catch {
+                setProducts([]);
+                setTotal(0);
+            }
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const handleSearch = (e) => {
         if (e.key === "Enter" || e.type === "click") {
-            if (inputValue.trim() !== "") {
+            const query = inputValue.trim();
+            if (query !== "") {
                 setHasSearched(true);
-                setLoading(true);
-                fetchProducts({ search: inputValue.trim(), limit: 50 })
-                    .then((res) => {
-                        setProducts(res.data.map(mapProduct));
-                        setTotal(res.total);
-                    })
-                    .catch((err) => console.error("API hatası:", err))
-                    .finally(() => setLoading(false));
+                // 3+ kelime → AI arama, kısa sorgu → klasik arama
+                const wordCount = query.split(/\s+/).length;
+                doSearch(query, wordCount >= 3);
             }
         }
     };
@@ -40,7 +76,8 @@ export default function SearchSection() {
     const handleClear = () => {
         setInputValue("");
         setHasSearched(false);
-        // Temizleyince tüm ürünleri tekrar yükle
+        setAiMode(false);
+        setVoiceError(null);
         setLoading(true);
         fetchProducts({ limit: 50 })
             .then((res) => {
@@ -54,37 +91,50 @@ export default function SearchSection() {
     const handleTrendingClick = (term) => {
         setInputValue(term);
         setHasSearched(true);
-        setLoading(true);
-        fetchProducts({ search: term, limit: 50 })
-            .then((res) => {
-                setProducts(res.data.map(mapProduct));
-                setTotal(res.total);
-            })
-            .catch((err) => console.error("API hatası:", err))
-            .finally(() => setLoading(false));
+        doSearch(term, false);
+    };
+
+    // Sesli arama sonucu
+    const handleVoiceResult = (transcript) => {
+        setInputValue(transcript);
+        setHasSearched(true);
+        // Sesli arama her zaman AI modunda
+        doSearch(transcript, true);
+    };
+
+    const handleVoiceError = (msg) => {
+        setVoiceError(msg);
+        setTimeout(() => setVoiceError(null), 5000);
     };
 
     return (
         <main className="max-w-[1200px] mx-auto px-4 md:px-8 flex flex-col pt-16 md:pt-24 min-h-screen">
 
-            {/* 1. HERO BAŞLIK */}
+            {/* HERO BAŞLIK */}
             <div className="mb-8 text-center z-10 relative">
                 <h1 className="font-display-lg text-display-lg text-primary tracking-tight">SmartPrice</h1>
-                <p className="font-body-md text-body-md text-on-surface-variant mt-2">Find the true cost before you buy.</p>
+                <p className="font-body-md text-body-md text-on-surface-variant mt-2">
+                    Find the true cost before you buy. <span className="text-primary font-medium">Try voice search!</span>
+                </p>
             </div>
 
-            {/* 2. ARAMA ÇUBUĞU */}
+            {/* ARAMA ÇUBUĞU */}
             <section className="w-full max-w-[600px] mx-auto flex flex-col gap-4 relative z-20">
                 <div className="relative w-full">
-                    <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-outline">search</span>
+                    <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-outline">
+                        {aiMode ? "psychology" : "search"}
+                    </span>
                     <input
-                        className="w-full bg-surface-container-lowest border border-outline-variant text-on-surface font-body-lg text-body-lg rounded-full py-4 pl-12 pr-12 shadow-[0px_2px_5px_rgba(0,0,0,0.1)] focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
-                        placeholder="Search for products to track..."
+                        className="w-full bg-surface-container-lowest border border-outline-variant text-on-surface font-body-lg text-body-lg rounded-full py-4 pl-12 pr-20 shadow-[0px_2px_5px_rgba(0,0,0,0.1)] focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
+                        placeholder={aiMode ? "Doğal dil ile arayın... (örn: oyun laptopu 40000 TL altında)" : "Search for products to track..."}
                         type="text"
                         value={inputValue}
                         onChange={(e) => setInputValue(e.target.value)}
                         onKeyDown={handleSearch}
                     />
+                    {/* Voice Search Butonu */}
+                    <VoiceSearch onResult={handleVoiceResult} onError={handleVoiceError} />
+                    {/* Temizle Butonu */}
                     {inputValue && (
                         <button
                             onClick={handleClear}
@@ -94,9 +144,13 @@ export default function SearchSection() {
                         </button>
                     )}
                 </div>
+                {/* Ses hatası mesajı */}
+                {voiceError && (
+                    <p className="text-red-500 text-caption text-center -mt-2">{voiceError}</p>
+                )}
             </section>
 
-            {/* 3. İLK EKRAN: TRENDING VE BUTONLAR */}
+            {/* İLK EKRAN: TRENDING */}
             <div
                 className={`w-full max-w-[600px] mx-auto flex flex-col items-center overflow-hidden transition-all duration-500 ease-in-out ${
                     hasSearched ? "max-h-0 opacity-0" : "max-h-[300px] opacity-100 mt-8"
@@ -123,7 +177,7 @@ export default function SearchSection() {
                 </div>
             </div>
 
-            {/* 4. SONUÇ KARTLARI */}
+            {/* SONUÇ KARTLARI (arama yapıldığında) */}
             <div
                 className={`w-full transition-all duration-700 ease-in-out transform ${
                     hasSearched
@@ -132,13 +186,21 @@ export default function SearchSection() {
                 }`}
             >
                 <div className="flex justify-between items-center px-2 mb-6">
-                    <span className="font-body-md text-body-md text-on-surface-variant">
-                        {total > 0 ? (
-                            <>Showing {products.length} of {total} results {inputValue && <><span className="text-on-surface">for </span><span className="font-bold text-on-surface">"{inputValue}"</span></>}</>
-                        ) : (
-                            "No results found"
+                    <div className="flex flex-col gap-1">
+                        <span className="font-body-md text-body-md text-on-surface-variant">
+                            {total > 0 ? (
+                                <>Showing {products.length} of {total} results {inputValue && <><span className="text-on-surface">for </span><span className="font-bold text-on-surface">"{inputValue}"</span></>}</>
+                            ) : (
+                                "No results found"
+                            )}
+                        </span>
+                        {aiMode && total > 0 && (
+                            <span className="font-caption text-caption text-primary flex items-center gap-1">
+                                <span className="material-symbols-outlined text-[14px]">psychology</span>
+                                AI-powered semantic search
+                            </span>
                         )}
-                    </span>
+                    </div>
                 </div>
 
                 {loading ? (
@@ -154,7 +216,7 @@ export default function SearchSection() {
                 )}
             </div>
 
-            {/* 5. VARSAYILAN ÜRÜN LİSTESİ (arama yapılmamışken) */}
+            {/* VARSAYILAN ÜRÜN LİSTESİ (arama yapılmamışken) */}
             <div className={`mt-12 mb-24 ${hasSearched ? "hidden" : ""}`}>
                 <h2 className="font-headline-md text-headline-md text-on-surface mb-6 text-center">Latest Tracked Products</h2>
                 {loading ? (
