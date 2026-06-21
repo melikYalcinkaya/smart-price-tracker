@@ -66,9 +66,9 @@ export default function SearchSection() {
             const query = inputValue.trim();
             if (query !== "") {
                 setHasSearched(true);
-                // 3+ kelime → AI arama, kısa sorgu → klasik arama
+                // 2+ kelime → AI arama, tek kelime → klasik arama
                 const wordCount = query.split(/\s+/).length;
-                doSearch(query, wordCount >= 3);
+                doSearch(query, wordCount >= 2);
             }
         }
     };

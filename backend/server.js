@@ -4,7 +4,7 @@ import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { ChromaClient } from "chromadb";
-import { DefaultEmbeddingFunction } from "@chroma-core/default-embed";
+import { getEmbeddingFunction } from "./embedding.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -20,7 +20,7 @@ const CHROMA_URL = process.env.CHROMA_URL || "http://localhost:8000";
 
 async function getChromaCollection() {
   if (chromaCollection) return chromaCollection;
-  const embedder = new DefaultEmbeddingFunction();
+  const embedder = getEmbeddingFunction();
   chromaClient = new ChromaClient({ host: "localhost", port: 8000 });
   chromaCollection = await chromaClient.getCollection({
     name: "products",
@@ -119,13 +119,19 @@ app.get("/api/products", (req, res) => {
     }
 
     if (search) {
-      const s = search.toLowerCase();
-      result = result.filter(
-        (p) =>
-          p.name?.toLowerCase().includes(s) ||
-          p.brand?.toLowerCase().includes(s) ||
-          p.category?.toLowerCase().includes(s)
-      );
+      // Akıllı anahtar kelime araması kullan (kelime bazlı, skor sıralı)
+      // Önceden filtrelenmiş ürünleri de geç (category, platform, brand filtreleri)
+      result = smartKeywordSearch(search, result);
+      // sayfalama smartKeywordSearch içinde yapılıyor, direkt döndür
+      res.json({
+        success: true,
+        total: result.length,
+        page: 1,
+        limit: result.length,
+        totalPages: 1,
+        data: result,
+      });
+      return;
     }
 
     // Fiyat sıralaması
@@ -387,36 +393,162 @@ app.post("/api/search", async (req, res) => {
       });
     }
 
+    // Düşük skorlu sonuçları filtrele (eşik: 0.25)
+    // Cosine mesafesi 0.75 üzeri → benzerlik 0.25 altı → alakasız
+    const MIN_SCORE = 0.25;
+    const goodResults = filtered.filter((p) => p.score == null || p.score >= MIN_SCORE);
+
+    // Eğer AI arama yeterince iyi sonuç bulamadıysa, akıllı keyword aramasına düş
+    if (goodResults.length < 3) {
+      console.log(`AI arama sadece ${goodResults.length} iyi sonuç buldu (eşik: ${MIN_SCORE}), keyword fallback deneniyor...`);
+      const keywordResults = smartKeywordSearch(query);
+      // Keyword sonuçlarını AI sonuçlarının sonuna ekle, duplicate'leri temizle
+      const seenIds = new Set(goodResults.map((p) => p.id));
+      for (const p of keywordResults) {
+        if (!seenIds.has(p.id)) {
+          seenIds.add(p.id);
+          goodResults.push({ ...p, score: null, fallback: true });
+        }
+      }
+    }
+
     res.json({
       success: true,
       query,
-      total: filtered.length,
-      data: filtered,
+      total: goodResults.length,
+      data: goodResults,
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// Sorguyu embedding için zenginleştir
+// Sorguyu embedding için zenginleştir — Türkçe + İngilizce terimleri kapsar
 function buildSearchQuery(query) {
   const q = query.toLowerCase();
   const hints = [];
 
-  // Kategori ipuçları
-  if (/laptop|bilgisayar|notebook|dizüstü|gaming/i.test(q)) hints.push("category: laptop");
-  if (/telefon|phone|cep|iphone|samsung|xiaomi/i.test(q)) hints.push("category: telefon");
-  if (/tablet|ipad/i.test(q)) hints.push("category: tablet");
-  if (/kulaklık|headphone|headset|kulak/i.test(q)) hints.push("category: kulaklık");
-  if (/saat|watch|akıllı saat/i.test(q)) hints.push("category: akıllı saat");
-
-  // Marka ipuçları
-  const brands = ["Apple", "Samsung", "Lenovo", "HP", "ASUS", "ACER", "MSI", "Casper", "Monster", "Xiaomi", "Huawei"];
-  for (const brand of brands) {
-    if (q.includes(brand.toLowerCase())) hints.push(`brand: ${brand}`);
+  // === KATEGORİ İPUÇLARI ===
+  // Oyun / Gaming laptop
+  if (/oyun|gaming|game|oyuncu/i.test(q)) {
+    hints.push("kategori: oyun laptopu, gaming laptop");
+  }
+  // Genel laptop
+  if (/laptop|bilgisayar|notebook|dizüstü|pc/i.test(q)) {
+    hints.push("kategori: laptop, bilgisayar");
+  }
+  // Telefon
+  if (/telefon|phone|cep|akıllı telefon|iphone|samsung.*telefon|xiaomi.*telefon/i.test(q)) {
+    hints.push("kategori: telefon, akıllı telefon");
+  }
+  // Tablet
+  if (/tablet|ipad/i.test(q)) {
+    hints.push("kategori: tablet");
+  }
+  // Kulaklık
+  if (/kulaklık|headphone|headset|kulak[iı]k|airpods/i.test(q)) {
+    hints.push("kategori: kulaklık");
+  }
+  // Saat
+  if (/saat|watch|akıll[iı] saat|smartwatch/i.test(q)) {
+    hints.push("kategori: akıllı saat, smartwatch");
+  }
+  // Monitör / Ekran
+  if (/monitör|monitor|ekran|screen/i.test(q)) {
+    hints.push("kategori: monitör, ekran");
+  }
+  // Klavye / Mouse
+  if (/klavye|keyboard|mouse|fare/i.test(q)) {
+    hints.push("kategori: klavye, mouse, fare");
   }
 
+  // === MARKA İPUÇLARI ===
+  // Büyük markalar (büyük/küçük harf duyarsız)
+  const brandMap = {
+    "apple": "Apple", "samsung": "Samsung", "lenovo": "Lenovo",
+    "hp": "HP", "asus": "ASUS", "acer": "ACER", "msi": "MSI",
+    "casper": "Casper", "monster": "Monster", "xiaomi": "Xiaomi",
+    "huawei": "Huawei", "dell": "Dell", "honor": "Honor",
+    "oppo": "Oppo", "realme": "Realme", "tecno": "Tecno",
+    "hometech": "Hometech", "technomen": "Technomen",
+    "tcl": "TCL", "vestel": "Vestel", "arçelik": "Arçelik",
+    "beko": "Beko", "grundig": "Grundig",
+  };
+  for (const [key, brand] of Object.entries(brandMap)) {
+    if (q.includes(key)) hints.push(`marka: ${brand}`);
+  }
+
+  // === FİYAT / BÜTÇE İPUÇLARI (embedding'i etkilemesin diye eklemiyoruz) ===
+  // Fiyat filtreleri extractPriceFilter ile ayrıca işleniyor
+
   return hints.length > 0 ? `${query} (${hints.join(", ")})` : query;
+}
+
+// Akıllı anahtar kelime araması: sorguyu kelimelere böl, her kelimeyi
+// ürünün farklı alanlarında ara, eşleşme sayısına göre sırala.
+// ChromaDB'nin olmadığı veya düşük skorlu sonuç verdiği durumlarda fallback.
+function smartKeywordSearch(query, preselectedProducts) {
+  const products = preselectedProducts || readCSV(PRODUCTS_PATH);
+  const words = query
+    .toLowerCase()
+    .split(/[\s,]+/)
+    .filter((w) => w.length >= 2);
+
+  if (words.length === 0) return [];
+
+  // Fiyat filtresi varsa çıkar
+  const priceFilter = extractPriceFilter(query);
+
+  const scored = products
+    .map((p, idx) => {
+      let score = 0;
+      const name = (p.name || "").toLowerCase();
+      const category = (p.category || "").toLowerCase();
+      const brand = (p.brand || "").toLowerCase();
+      const seller = (p.seller || "").toLowerCase();
+
+      for (const word of words) {
+        // Tam eşleşme → yüksek skor
+        if (name.includes(word)) score += 3;
+        if (category.includes(word)) score += 5; // kategori eşleşmesi daha önemli
+        if (brand.includes(word)) score += 2;
+        if (seller.includes(word)) score += 1;
+      }
+
+      // Özel: "oyun" + "laptop" ikisi birden varsa bonus
+      const hasGaming = words.some((w) => /oyun|gaming|game/i.test(w));
+      const hasLaptop = words.some((w) => /laptop|bilgisayar|notebook/i.test(w));
+      if (hasGaming && hasLaptop && category.includes("laptop")) {
+        score += 10;
+      }
+
+      return {
+        id: idx + 1,
+        platform: p.platform || "",
+        category: p.category || "",
+        name: p.name || "",
+        brand: p.brand || "",
+        seller: p.seller || "",
+        seller_rating: p.seller_rating || "",
+        link: p.link || "",
+        base_price: parseFloat(p.base_price) || 0,
+        score: null,
+        keywordScore: score,
+        fallback: true,
+      };
+    })
+    .filter((p) => {
+      if (p.keywordScore === 0) return false;
+      if (priceFilter) {
+        if (priceFilter.max && p.base_price > priceFilter.max) return false;
+        if (priceFilter.min && p.base_price < priceFilter.min) return false;
+      }
+      return true;
+    })
+    .sort((a, b) => b.keywordScore - a.keywordScore)
+    .slice(0, 50);
+
+  return scored;
 }
 
 // Doğal dil sorgusundan fiyat filtresi çıkar

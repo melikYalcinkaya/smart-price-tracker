@@ -2,7 +2,7 @@
 // Kullanım: node scripts/index-products.js
 
 import { ChromaClient } from "chromadb";
-import { DefaultEmbeddingFunction } from "@chroma-core/default-embed";
+import { getEmbeddingFunction } from "../embedding.js";
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -95,7 +95,7 @@ async function main() {
     // koleksiyon zaten yoksa hata vermez
   }
 
-  const embedder = new DefaultEmbeddingFunction();
+  const embedder = getEmbeddingFunction();
   const collection = await client.createCollection({
     name: "products",
     metadata: { "hnsw:space": "cosine" },
